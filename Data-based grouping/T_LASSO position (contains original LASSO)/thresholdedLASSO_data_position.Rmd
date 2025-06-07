@@ -1,0 +1,249 @@
+---
+title: "main"
+author: "Zuofu Huang"
+output: html_document
+---
+
+# Housekeeping
+
+```{r message=FALSE}
+library(caret)
+library(tidyverse)
+library(clv)
+library(TraMineR)
+library(ggplot2)
+# library(Matrix)
+# library(glmnet)
+library(matrixcalc)
+
+data <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/cleaned_data_noNA.csv")[,-c(1:3)]
+colnames(data) <- c(format(seq(as.POSIXct("00:00:00", format = "%T"), 
+                 as.POSIXct("23:59:00", format = "%T"), by = "1 min"), "%H:%M"))
+
+data <- data %>%
+  mutate_if(is.character, as.factor)
+
+extract_time <- function(string){
+  as.numeric(substring(string, 2, 3)) * 60 + as.numeric(substring(string, 5, 6)) + 1
+}
+```
+
+
+```{r}
+source("clust_assign_func.R")
+
+seq_distances <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/sequences_dist_matrix_om.csv")[,-1]
+
+hclust_real <- stats::hclust(as.dist(seq_distances), method = "complete")
+fit_real <- cutree(hclust_real, k = 23)
+table(fit_real)
+
+# OLD code
+# cluster_assignment <- create_clusters_Dunn(seq_distances)
+
+# Current
+cluster_assignment <- reorder_cluster_assignment(fit_real)
+cluster_assignment[cluster_assignment > 14] <- 15
+
+data_CA <- data
+data_CA$CA <- as.factor(cluster_assignment)
+```
+
+
+# LASSO
+
+```{r}
+# # Ran 12/28/2024 with seed 256
+# set.seed(256)
+# lasso_caret <- train(as.factor(CA) ~ .,
+#                     data = data_CA,
+#                     method = "glmnet",
+#                     family = "multinomial",
+#                     trControl = trainControl(method = "cv", number = 10),
+#                     tuneGrid = expand.grid(alpha = 1,
+#                                           lambda  = seq(0, 0.1, length.out = 101)))
+#                                        # lambda = 0.003))
+# 
+# lasso_results <- coef(lasso_caret$finalModel, lasso_caret$finalModel$lambdaOpt)
+# 
+# sum(predict(lasso_caret, type = "raw") == cluster_assignment) 
+# mat1 <- table(predict(lasso_caret, type = "raw"), cluster_assignment) # top row is actual 
+```
+
+```{r}
+lasso_caret <- readRDS("lasso_full_model_data_seed256")
+lasso_results <- readRDS("lasso_results_data_seed256")
+```
+
+## LASSO coefficients
+
+```{r}
+positions_larger_than_threshold <- function(lasso_object, index, threshold){
+  return(
+    (lasso_object[[index]]@Dimnames[[1]])[lasso_object[[index]]@i[which(abs((lasso_object[[index]]@x)) > threshold)]]
+  )
+}
+
+get_length <- function(lasso_object, index, threshold){
+  return(
+    length(positions_larger_than_threshold(lasso_object, index, threshold))
+  )
+}
+
+get_times <- function(lasso_object, index, threshold){
+  return(
+    extract_time(positions_larger_than_threshold(lasso_object, index, threshold))
+  )
+}
+```
+
+```{r}
+# For each level of the multinomial distribution, which variables were selected?
+# sapply(1:15, get_length, lasso_object = lasso_results, threshold = 3)
+# positions_left <- sort(unique(unlist(sapply(1:15, get_times, lasso_object = lasso_results, threshold = 0.01))))
+```
+
+
+
+## Use reduced number of predictors (through the cut-off threshold) to make the prediction
+
+Reducing the number of predictors actually improves prediction. The regression coefficient does not fully represent how much that variable affects the prediction.
+
+```{r}
+# positions_left <- sort(unique(unlist(sapply(1:15, get_times, lasso_object = lasso_results, threshold = 2))))
+# data_CA_reduced <- data_CA[,c(positions_left, 1441)]
+#   
+# set.seed(7003)
+# lasso_step2 <- train(as.factor(CA) ~ .,
+#                     data = data_CA_reduced,
+#                     method = "glmnet",
+#                     family = "multinomial",
+#                     trControl = trainControl(method = "cv", number = 10),
+#                     tuneGrid = expand.grid(alpha = 1, lambda = seq(0, 0.05, length.out = 101)))
+# 
+# # lasso_step2$bestTune
+# lasso_results_Step2 <- coef(lasso_step2$finalModel, lasso_step2$finalModel$lambdaOpt)
+# 
+# sum(predict(lasso_step2, type = "raw") == cluster_assignment)
+# # table(predict(lasso_step2, type = "raw"), cluster_assignment)
+# 
+# positions_left_step2 <- sort(unique(unlist(sapply(1:15, get_times, lasso_object = lasso_results_Step2, threshold = 0))))
+# 
+# # NA occasionally introduced for picking up intercept?
+# positions_left_step2 <- na.omit(positions_left_step2)
+# 
+# length(positions_left_step2)
+```
+
+
+
+## Automate the process and create a plot
+
+```{r}
+# all_thresholds <- c(10^(-8:-2),seq(from = 0.1, to = 3, by = 0.05))
+# 
+# all_accuracy <- rep(NA, length(all_thresholds))
+# all_lengths <- rep(NA, length(all_thresholds))
+# 
+# 
+# for (i in 1:length(all_thresholds)){
+#   positions_left <- sort(unique(unlist(sapply(1:15, get_times, lasso_object = lasso_results, threshold = all_thresholds[i]))))
+#   data_CA_reduced <- data_CA[,c(positions_left, 1441)]
+#   
+#   set.seed(7003)
+#   lasso_step2 <- train(as.factor(CA) ~ .,
+#                        data = data_CA_reduced,
+#                        method = "glmnet",
+#                        family = "multinomial",
+#                        trControl = trainControl(method = "cv", number = 10),
+#                        tuneGrid = expand.grid(alpha = 1, lambda = seq(0, 0.05, length.out = 101)))
+#   
+#   all_accuracy[i] <- sum(predict(lasso_step2, type = "raw") == cluster_assignment)
+# 
+#   lasso_results_Step2 <- coef(lasso_step2$finalModel, lasso_step2$finalModel$lambdaOpt)
+#   positions_left_step2 <- sort(unique(unlist(sapply(1:15, get_times, lasso_object = lasso_results_Step2, threshold = 0))))
+#   
+#   # NA occasionally introduced for picking up intercept?
+#   positions_left_step2 <- na.omit(positions_left_step2)
+#   
+#   all_lengths[i] <- length(positions_left_step2)
+# }
+# 
+# thresholdedLASSO_data_results_seed7003 <- as.data.frame(cbind(all_thresholds, all_accuracy, all_lengths))
+# 
+# colnames(thresholdedLASSO_data_results_seed7003) <- c("Threshold","Accuracy","Positions")
+
+# saveRDS(thresholdedLASSO_data_results_seed7003,"thresholdedLASSO_data_results_seed7003")
+```
+
+```{r}
+thresholdedLASSO_data_results <- readRDS("thresholdedLASSO_data_results_seed7003") %>%
+  mutate(misclassify_percent = round(1-Accuracy/2892, 4) * 100)
+```
+
+```{r}
+ggplot(thresholdedLASSO_data_results, aes(x = Threshold, y = 1-Accuracy/2892)) + 
+  geom_point() + 
+  geom_smooth(se = F) +
+  ylab("Misclassification rate") +
+  scale_x_continuous(limits = c(0,3), breaks = seq(0,3,0.25)) +
+  scale_y_continuous(lim = c(0, 0.1), breaks = seq(0,0.1, 0.01)) + 
+  theme_bw()
+
+ggplot(thresholdedLASSO_data_results, aes(x = Threshold, y = Positions)) + 
+  geom_point() + 
+  geom_smooth(se = F) +
+  ylab("Number of remaining positions") +
+  scale_x_continuous(limits = c(0,3), breaks = seq(0,3,0.25)) +
+  scale_y_reverse(lim = c(450,0)) + 
+  theme_bw()
+
+ggplot(thresholdedLASSO_data_results, aes(x = Positions, y = 1 - Accuracy/2892)) + 
+  geom_point() + 
+  geom_smooth(se = F) +
+  scale_x_reverse(lim = c(450,0)) + 
+  scale_y_continuous(lim = c(0, 0.1), breaks = seq(0,0.1, 0.01)) + 
+  xlab("Number of remaining positions") +
+  ylab("Misclassification rate") +
+  theme_bw()
+```
+
+
+# Compare with random forests
+
+```{r}
+thresholdedLASSO_data_results <- readRDS("thresholdedLASSO_data_results_seed7003") %>%
+  rename(positions = Positions, accuracy = Accuracy) %>%
+  select(positions, accuracy) %>%
+  mutate(method = "Thresholded LASSO")
+
+rf_position_combined <- read.csv("../competitors/forests/rf_position_combined.csv")[,-1] %>%
+  select(positions, accuracy) %>%
+  mutate(method = "RF position combined")
+
+rf_position_activity <- read.csv("../competitors/forests/rf_position_activity.csv")[,-1] %>%
+  select(positions, accuracy) %>%
+  mutate(method = "RF position activity")
+
+combined <- rbind(thresholdedLASSO_data_results, rf_position_combined, rf_position_activity)
+
+combined_reduced <- combined %>%
+  filter(method != "RF position combined") %>%
+  mutate(method = case_when(
+    method == "Thresholded LASSO" ~ "Thresholded LASSO",
+    method == "RF position activity" ~ "Random forest",
+    .default = NA
+  ))
+
+ggplot(data = combined_reduced, aes(x = positions, y = 1 - accuracy/2892, color = method)) +
+  geom_point() +
+  geom_smooth(se = F) +
+  xlab("Number of remaining positions") +
+  ylab("Misclassification rate") + 
+  scale_x_reverse(lim = c(450,0)) + 
+  scale_y_continuous(lim = c(0, 0.1), breaks = seq(0,0.1, 0.01)) + 
+  theme_bw()
+  
+```
+
+

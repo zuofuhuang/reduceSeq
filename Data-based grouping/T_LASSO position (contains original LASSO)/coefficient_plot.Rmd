@@ -1,0 +1,108 @@
+---
+title: "Why does reduceSeq work the way it works?"
+author: "Zuofu Huang"
+output: html_document
+---
+
+Goal: Our reduceSeq method uses manual thresholding to get rid of smaller coefficients that LASSO doesn't shrink to 0 (but the accuracy is maximized). What if we make the lambda value larger than the cross validation identifies?
+
+# Housekeeping
+
+```{r message=FALSE}
+library(caret)
+library(tidyverse)
+library(ggplot2)
+library(clv)
+library(TraMineR)
+library(matrixcalc)
+library(latex2exp)
+
+data <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/cleaned_data_noNA.csv")[,-c(1:3)]
+colnames(data) <- c(format(seq(as.POSIXct("00:00:00", format = "%T"), 
+                 as.POSIXct("23:59:00", format = "%T"), by = "1 min"), "%H:%M"))
+
+data <- data %>%
+  mutate_if(is.character, as.factor)
+
+extract_time <- function(string){
+  as.numeric(substring(string, 2, 3)) * 60 + as.numeric(substring(string, 5, 6)) + 1
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+# "baseline" sequences
+palette <- c("#009292","#FF6DB6","#B6DBFF","#FFB6DB","#490092","#999999","#DB6D00","#004949","#B66DFF","#6DB6FF","#920000","#924900","#006DDB")
+
+set.seed(32)
+sample_sequences <- data[sample(1:1929, 100),]
+seqiplot(seqdef(sample_sequences, cpal = palette), border = NA, cex.legend = 0.5, tlim = 1:300, ylab = NA, xtlab = NA, sortv = "from.start")
+
+# Example: seqiplot(seqdef(data), border = NA, cex.legend = 0.5, idxs = sample(which(cluster_assignment == 1), min(50,sum(cluster_assignment == 1))), ylab = NA, xtlab = NA, cpal = palette)
+```
+
+Outline:
+1. Create pairwise distances through optimal matching.
+2. Hierarchical clustering with average distance
+3. Group by Dunn index
+
+
+```{r}
+source("clust_assign_func.R")
+
+seq_distances <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/sequences_dist_matrix_om.csv")[,-1]
+
+hclust_real <- stats::hclust(as.dist(seq_distances), method = "complete")
+fit_real <- cutree(hclust_real, k = 23)
+# table(fit_real)
+
+# cluster_assignment <- create_clusters_Dunn(seq_distances)
+cluster_assignment <- reorder_cluster_assignment(fit_real)
+
+# Consider cases where the groups are not consolidated down.
+cluster_assignment[cluster_assignment > 14] <- 15
+```
+
+```{r}
+data_CA <- data
+data_CA$CA <- as.factor(cluster_assignment)
+```
+
+
+```{r}
+lasso_results <- readRDS("lasso_results_data_seed256")
+```
+
+## Histogram - For each level of the multinomial distribution, which variables were selected?
+
+```{r}
+magnitude <- log10(abs(lasso_results[[1]]@x))
+distributions <- cbind(rep(1, length(magnitude)), magnitude)
+
+for (j in 2:15){
+  magnitude <- log10(abs(lasso_results[[j]]@x))
+  distributions <- rbind(distributions, cbind(rep(j, length(magnitude)), magnitude))
+}
+
+distributions <- as.data.frame(distributions)
+colnames(distributions) <- c("Cluster", "magnitude")
+
+ggplot(distributions, aes(x = magnitude)) +
+  geom_histogram(binwidth = 0.5, fill = "white", colour = "black") +
+  facet_wrap(~Cluster, ncol = 5) +  
+  xlab("Distribution of LASSO coefficient size for each binary model") + 
+  ylim(0, 40) +
+  scale_x_continuous(breaks = c(-15,-10,-5,0),
+                     labels = c(TeX("$10^{-15}$"),TeX("$10^{-10}$"), TeX("$10^{-5}$"),1),
+                     limits = c(-18,2)) +
+  theme_bw()
+
+ggplot(distributions, aes(x = magnitude)) +
+  geom_histogram(binwidth = 0.2, fill = "white", colour = "black") +
+  facet_wrap(~Cluster, ncol = 5) +  
+  scale_x_continuous(breaks = c(-6,-4,-2,0),
+                     labels = c(TeX("$10^{-6}$"),TeX("$10^{-4}$"), TeX("$10^{-2}$"),1),
+                     limits = c(-6,1)) +
+  xlab("Distribution of LASSO coefficient size for each binary model") + 
+  ylim(0, 15) +
+  theme_bw()
+```

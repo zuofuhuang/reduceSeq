@@ -1,0 +1,185 @@
+---
+title: "Group LASSO"
+author: "Zuofu Huang"
+output: html_document
+---
+
+# Housekeeping
+
+```{r message=FALSE}
+library(caret)
+library(tidyverse)
+library(clv)
+library(TraMineR)
+library(matrixcalc)
+library(gglasso)
+library(grplasso)
+library(fastDummies)
+```
+
+```{r}
+set.seed(7003)
+
+data <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/cleaned_data_noNA.csv")[,-c(1:3)]
+colnames(data) <- c(format(seq(as.POSIXct("00:00:00", format = "%T"), 
+                 as.POSIXct("23:59:00", format = "%T"), by = "1 min"), "%H:%M"))
+
+data <- data %>%
+  mutate_if(is.character, as.factor)
+
+extract_time2 <- function(string){
+  as.numeric(substring(string, 1, 2)) * 60 + as.numeric(substring(string, 4, 5)) + 1
+}
+```
+
+Outline:
+1. Create pairwise distances through optimal matching.
+2. Hierarchical clustering with average distance
+3. Group by Dunn index
+
+
+```{r}
+source("../clust_assign_func.R")
+
+seq_distances <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/sequences_dist_matrix_om.csv")[,-1]
+
+hclust_real <- stats::hclust(as.dist(seq_distances), method = "complete")
+fit_real <- cutree(hclust_real, k = 23)
+# table(fit_real)
+
+# cluster_assignment <- create_clusters_Dunn(seq_distances) 
+cluster_assignment <- reorder_cluster_assignment(fit_real)
+
+# Get rid of the really small "abnormalities" groups perhaps.
+cluster_assignment[cluster_assignment > 14] <- 15
+```
+
+```{r}
+data_wide <- fastDummies::dummy_cols(data, remove_selected_columns = T)
+
+lasso_groups <- sapply(colnames(data_wide), extract_time2)
+```
+
+
+### Grplasso
+
+```{r}
+# data_CA <- data_wide
+# data_CA$CA <- as.factor(cluster_assignment)
+
+# fit <- grplasso(which(CA==1) ~ ., data = data_wide, model = LogReg(), lambda = 20, index = index)
+```
+
+
+### GGLASSO
+
+gglasso only supports a two-factor categorical predictor.
+
+We could, however, write a loop that loops over all possible lambdas, and perform a one-vs-rest binary logistic regression.
+
+https://machinelearningmastery.com/one-vs-rest-and-one-vs-one-for-multi-class-classification/
+
+```{r}
+convert <- function(assignments, goal){
+  pos1 <- which(assignments == goal)
+  pos2 <- which(assignments != goal)
+  assignments[pos1] <- 1
+  assignments[pos2] <- -1
+  return(assignments)
+}
+```
+
+ 
+ 
+```{r}
+# No need to cross validate, because there is only one lambda present
+each_lasso <- function(data, cluster_assignment, lasso_group, lambda, current_cluster){ # a certain lambda
+   grlasso <- gglasso(data, convert(cluster_assignment, current_cluster), lambda = lambda, group = lasso_group,
+                            loss = "logit", intercept = F)
+   coefs <- grlasso$beta
+   nonzero_coefs <- coefs[coefs[,1] != 0,] # These are the coefficients
+   positions <- unique(extract_time2(names(nonzero_coefs))) # Used these positions
+   
+   result <- predict(grlasso, newx = data, type = "link") # To predict the binary probability here
+   return(list("results" = result, "beta" = coefs, "predictive_positions" = positions))
+}
+
+one_lambda_run <- function(data, cluster_assignment, lasso_group, lambda){ # all possible cluster assignments with the same lambda
+  ngroup <- length(unique(cluster_assignment))
+  
+  result_matrix <- lapply(1:ngroup, each_lasso, data = data, cluster_assignment = cluster_assignment, lasso_group = lasso_groups, lambda = lambda)
+  
+  probs_matrix <- sapply(result_matrix, "[[", 1)
+  beta_matrix <- sapply(result_matrix, "[[", 2)
+  position_matrix <- sapply(result_matrix, "[[", 3)
+  
+  prediction <- apply(probs_matrix, MARGIN = 1, which.max)
+  accuracy <- sum(prediction == cluster_assignment)/length(cluster_assignment)
+  
+  return(list("accuracy" = accuracy, "prediction" = prediction, "probs_matrix" = probs_matrix, "beta_matrix" = beta_matrix, "position_matrix" = position_matrix))
+}
+
+multinomial_lasso <- function(data, cluster_assignment, lasso_group, lambda_grid){
+  multi_lambda_result <- lapply(lambda_grid, one_lambda_run, data = data, cluster_assignment = cluster_assignment, lasso_group = lasso_groups)
+  return(multi_lambda_result)
+}
+
+get_multi_lasso <- function(multi_lambda_result, lambda_grid){
+  accuracy <- sapply(multi_lambda_result, "[[", 1)
+  best_lambda <- lambda_grid[which.max(accuracy)]
+  
+  positions_across_lambdas <- lapply(multi_lambda_result, "[[", 5)
+
+  number_of_positions <- c()
+  positions_list <- list()
+  for (i in 1:length(positions_across_lambdas)){
+    number_of_positions[i] <- length(unique(unlist(positions_across_lambdas[[i]])))
+    positions_list[[i]] <- as.vector(unique(unlist(positions_across_lambdas[[i]])))
+  }
+  
+  plot(number_of_positions, accuracy, type = "b")
+  
+  return(list(best_lambda, lambda_grid, accuracy, number_of_positions, positions_list))
+}
+```
+
+**To ensure reproducibility, run all chunks before this at once. There is a seed 7003 at the top.**
+
+```{r}
+large_results <- multinomial_lasso(data = as.matrix(data_wide), cluster_assignment, lasso_groups, lambda_grid = 10^seq(from = -5, to = -1, length.out = 40))
+res <- get_multi_lasso(large_results, 10^seq(from = -5, to = -1, length.out = 40))
+
+# saveRDS(large_results, "groupLASSO_data_largeresults")
+# saveRDS(res, "groupLASSO_data_res")
+```
+
+**To ensure reproducibility, run all chunks before this at once. There is a seed 7003 at the top.**
+
+Rerun on Dec 28, 2024
+
+```{r}
+large_results <- readRDS("groupLASSO_data_largeresults")
+res <- readRDS("groupLASSO_data_res")
+```
+
+```{r}
+res_dat <- cbind(res[[2]], res[[3]], res[[4]])
+colnames(res_dat) <- c("lambda","accuracy","position")
+```
+
+
+TLDR: Need about hundreds of positions collectively to get 98%. ~50 positions only get you ~88% accuracy.
+
+```{r}
+library(ggplot2)
+
+ggplot(res_dat, aes(x = position, y = 1-accuracy)) +
+  geom_point() +
+  geom_smooth(se = F) +
+  xlab("Number of remaining positions") +
+  ylab("Misclassification rate") +
+  scale_x_reverse(breaks = seq(1440,0, by = -240)) +
+  scale_y_continuous(lim = c(0, 0.3), breaks = seq(0, 0.3, 0.05)) + 
+  theme_bw()
+```
+

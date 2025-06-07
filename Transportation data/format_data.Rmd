@@ -1,0 +1,80 @@
+---
+title: "Reformat data"
+author: "Zuofu Huang"
+date: "2023-12-29"
+output: html_document
+---
+
+Goal: Reformat Yingling's data to the format that we are used to working with
+
+```{r}
+library(stringr)
+library(tidyverse)
+library(TraMineR)
+library(lubridate)
+```
+
+
+```{r}
+p_df <- read_csv("processed_ucal_items_without_surveys_6_23_2022.csv")
+
+p_df <- p_df %>%
+  select(user_id, type, subtype, start_dateonly, end_dateonly, start_posix, end_posix)
+
+p_df$user_id <- unlist(strsplit(p_df$user_id, split = '_'))[seq(from = 2, to = 2*nrow(p_df), by = 2)]
+
+p_df$user_id <- as.numeric(p_df$user_id)
+p_df <- p_df[order(p_df$user_id),]
+
+
+long_data <- p_df %>%
+  mutate(start_min = hour(start_posix) * 60 + minute(start_posix) + 1,
+         end_min = hour(end_posix) * 60 + minute(end_posix) + 1,
+         dur = end_min - start_min,
+         date = start_dateonly) %>%
+  select(-c(start_dateonly, end_dateonly)) # start date always = end date
+
+newData <- long_data %>% 
+  dplyr::select(user_id, date)
+
+newData <- newData[!duplicated(newData),]
+
+newData <- cbind(newData, data.frame(matrix(NA, nrow = nrow(newData), ncol = 1440)))
+
+colnames(newData) <- c("record_id", "date", format(seq(as.POSIXct("00:00:00", format = "%T"), 
+           as.POSIXct("23:59:00", format = "%T"), by = "1 min"), "%H:%M"))
+
+for (i in 1:nrow(newData)){
+  matched <- long_data %>%
+    filter(user_id == newData$record_id[i]) %>%
+    filter(date == newData$date[i])
+  
+  for(j in 1:nrow(matched)){
+    start <- matched$start_min[j] + 2
+    end <- matched$end_min[j] + 2
+    subtype <- matched$subtype[j]
+    newData[i, start:end] <- subtype
+  }
+}
+```
+
+```{r}
+# No NAs allowed here, given that we have plenty data
+final_data <- newData[which(rowSums(is.na(newData)) == 0),]
+
+# write.csv(final_data, "cleaned_data_noNA.csv")
+```
+
+
+
+```{r}
+sequences <- seqdef(final_data[,-c(1,2)]) # No missingness here
+costs <- seqcost(sequences, method = "TRATE", with.missing = F) # trate: derived from observed transition rate
+distances <- seqdist(sequences, method = "OM", indel = costs$indel, sm = costs$sm, with.missing = F)
+
+# write.csv(distances, "sequences_dist_matrix_om.csv")
+```
+
+
+
+

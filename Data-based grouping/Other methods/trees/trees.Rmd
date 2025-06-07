@@ -1,0 +1,97 @@
+---
+title: "Trees"
+author: "Zuofu Huang"
+output: html_document
+---
+
+
+# Housekeeping
+
+```{r message=FALSE}
+library(caret)
+library(tidyverse)
+library(clv)
+library(TraMineR)
+# library(Matrix)
+# library(glmnet)
+library(matrixcalc)
+
+data <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/cleaned_data_noNA.csv")[,-c(1:3)]
+colnames(data) <- c(format(seq(as.POSIXct("00:00:00", format = "%T"), 
+                 as.POSIXct("23:59:00", format = "%T"), by = "1 min"), "%H:%M"))
+
+data <- data %>%
+  mutate_if(is.character, as.factor)
+
+extract_time <- function(string){
+  as.numeric(substring(string, 2, 3)) * 60 + as.numeric(substring(string, 5, 6)) + 1
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+# "baseline" sequences
+palette <- c("#009292","#FF6DB6","#B6DBFF","#FFB6DB","#490092","#999999","#DB6D00","#004949","#B66DFF","#6DB6FF","#920000","#924900","#006DDB")
+
+# set.seed(2895)
+# seqiplot(seqdef(data, cpal = palette), border = NA, cex.legend = 0.5, tlim = sample(1:1929, 100), ylab = NA, xtlab = NA)
+```
+
+Outline:
+1. Create pairwise distances through optimal matching.
+2. Hierarchical clustering with average distance
+3. Group by Dunn index
+
+
+```{r}
+source("../../clust_assign_func.R")
+
+seq_distances <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/sequences_dist_matrix_om.csv")[,-1]
+
+
+hclust_real <- stats::hclust(as.dist(seq_distances), method = "complete")
+fit_real <- cutree(hclust_real, k = 23)
+# table(fit_real)
+
+
+# cluster_assignment <- create_clusters_Dunn(seq_distances)
+
+cluster_assignment <- reorder_cluster_assignment(fit_real)
+
+# Consider cases where the groups are not consolidated down.
+cluster_assignment[cluster_assignment > 14] <- 15
+```
+
+```{r}
+data_CA <- data
+data_CA$CA <- as.factor(cluster_assignment)
+```
+
+
+# Decision tree
+
+```{r}
+colnames(data_CA) <- make.names(colnames(data_CA))
+
+# Ran 09/22/2024 with seed 512, maxdepth 13
+set.seed(512)
+classification_tree <- train(as.factor(CA) ~ .,
+                    data = data_CA,
+                    method = "rpart2",
+                    trControl = trainControl(method = "cv", number = 10),
+                    tuneGrid = expand.grid(maxdepth = seq(1, 15, length.out = 15))
+                    )
+
+# classification_tree$bestTune
+# plot(classification_tree$finalModel)
+# Best tune is 13 (i.e. Need a lot of variables to do classification)
+
+classification_tree <- readRDS("classification_tree_seed512")
+
+important_variables <- classification_tree$finalModel$variable.importance
+
+tree_important_times <- extract_time(names(important_variables))
+unique_important_times <- unique(unname(tree_important_times))
+
+sum(predict(classification_tree, type = "raw") == cluster_assignment) 
+mat4 <- table(predict(classification_tree, type = "raw"), cluster_assignment) # top row is actual 
+```
