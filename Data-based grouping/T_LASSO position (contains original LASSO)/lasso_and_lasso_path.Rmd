@@ -12,6 +12,7 @@ library(tidyverse)
 library(clv)
 library(TraMineR)
 library(ggplot2)
+library(glmnet)
 # library(Matrix)
 # library(glmnet)
 library(matrixcalc)
@@ -152,5 +153,73 @@ ggplot(lasso_path_results, aes(x = lambda, y = Positions)) +
   scale_x_continuous(breaks = seq(0,0.0125,0.0025)) +
   theme_bw()
 ```
+
+
+# LASSO with softmax
+
+```{r}
+# set.seed(619)
+# 
+# X <- model.matrix(CA ~ . - 1, data = data_CA)  # no intercept
+# 
+# # Response as factor
+# y <- data_CA$CA
+# 
+# glmnet.control(maxit = 10000)
+# 
+# cv_fit <- cv.glmnet(
+#   x = X,
+#   y = y,
+#   family = "multinomial",
+#   alpha = 1,         # alpha = 1 for LASSO penalty
+#   nfolds = 10,        # 10-fold cross-validation
+#   lambda = seq(1, 0.001,by = -0.001),
+#   standardize = T
+# )
+# 
+# write_rds(cv_fit, "LASSO_softmax_seed619")
+```
+
+```{r}
+cv_fit <- read_rds("LASSO_softmax_seed619")
+
+best_lambda <- cv_fit$lambda.min
+
+coefs_for_each_class <- coef(cv_fit, s = "lambda.1se")
+
+coefs_for_each_class <- lapply(coefs_for_each_class, function(i) rownames(i)[which(i != 0)])
+
+this <- predict(cv_fit, newx = X, s = "lambda.1se", type = "class")
+sum(this == cluster_assignment) 
+
+# 2891 is the best it can do for lambda-min, lambda.1se uses slightly fewer positions
+
+
+get_positions <- function(coefs, index){
+  vec <- coefs[[index]]
+  vec <- vec[vec != "(Intercept)"]
+  return(unique(extract_time(vec)))
+}
+
+positions_used <- sort(unique(unlist(sapply(1:15, get_positions, coefs = coefs_for_each_class))))
+```
+
+```{r}
+mat2 <- coefs_for_each_class$`2`
+
+sort(abs(mat2@x))
+```
+
+```{r}
+lambda_list <- seq(0.01, 0.001,by = -0.001)
+
+result <- rep(NA, length(lambda_list))
+
+for (i in 1:length(lambda_list)){
+  this <- predict(cv_fit, newx = X, s = lambda_list[i], type = "class")
+  result[i] <- sum(this == cluster_assignment) 
+}
+```
+
 
 
