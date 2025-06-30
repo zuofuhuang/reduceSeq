@@ -1,0 +1,236 @@
+---
+title: "Group LASSO"
+author: "Zuofu Huang"
+output: html_document
+---
+
+# Housekeeping
+
+```{r message=FALSE}
+library(caret)
+library(tidyverse)
+library(clv)
+library(TraMineR)
+library(matrixcalc)
+library(gglasso)
+library(grplasso)
+library(fastDummies)
+library(msgl)
+```
+
+```{r}
+data <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/cleaned_data_noNA.csv")[,-c(1:3)]
+colnames(data) <- c(format(seq(as.POSIXct("00:00:00", format = "%T"), 
+                 as.POSIXct("23:59:00", format = "%T"), by = "1 min"), "%H:%M"))
+
+data <- data %>%
+  mutate_if(is.character, as.factor)
+
+extract_time2 <- function(string){
+  as.numeric(substring(string, 1, 2)) * 60 + as.numeric(substring(string, 4, 5)) + 1
+}
+```
+
+
+```{r}
+source("/Users/zuofuhuang/Desktop/reduceSeq/Data-based grouping/clust_assign_func.R")
+
+seq_distances <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/sequences_dist_matrix_om.csv")[,-1]
+
+hclust_real <- stats::hclust(as.dist(seq_distances), method = "complete")
+fit_real <- cutree(hclust_real, k = 23)
+# table(fit_real)
+
+# cluster_assignment <- create_clusters_Dunn(seq_distances) 
+cluster_assignment <- reorder_cluster_assignment(fit_real)
+
+# Get rid of the really small "abnormalities" groups perhaps.
+cluster_assignment[cluster_assignment > 14] <- 15
+```
+
+```{r}
+data_wide <- fastDummies::dummy_cols(data, remove_selected_columns = T)
+
+lasso_groups <- sapply(colnames(data_wide), extract_time2)
+```
+
+
+# Sparse GL
+
+```{r}
+# set.seed(625)
+# 
+# cl <- makeCluster(4)
+# registerDoParallel(cl)
+# 
+# cv_fit <- msgl::cv(
+#   x = data_wide, 
+#   classes = cluster_assignment,
+#   grouping = lasso_groups,
+#   standardize = TRUE,
+#   lambda = 0.01,
+#   alpha = 0.5, # sparse group lasso
+#   fold = 10,
+#   use_parallel = TRUE
+# )
+# 
+# saveRDS(cv_fit, "msgl_sparseGL_0.5_cv_fit_seed625.rds")
+# 
+# cv_fit
+```
+
+## Fit no CV
+
+```{r}
+# set.seed(625)
+# 
+# fit <- msgl::fit(
+#   x = data_wide, 
+#   classes = cluster_assignment, 
+#   grouping = lasso_groups,
+#   standardize = TRUE,
+#   lambda = 0.01,
+#   alpha = 0.5)
+# 
+# saveRDS(fit, "msgl_sparseGL_0.5_fit_seed625.rds")
+```
+
+
+
+#  Fixed lambda sequence sparse GL
+
+```{r}
+# set.seed(631)
+# 
+# cl <- makeCluster(4)
+# registerDoParallel(cl)
+# 
+# cv_fit <- msgl::cv(
+#   x = data_wide, 
+#   classes = cluster_assignment,
+#   grouping = lasso_groups,
+#   standardize = TRUE,
+#   lambda = seq(0.08, 0.0005, by = -0.0005),
+#   alpha = 0.5, # sparse group lasso
+#   fold = 10,
+#   use_parallel = TRUE
+# )
+# 
+# saveRDS(cv_fit, "msgl_sparseGL_0.5_cv_fit_seed631_fixed.rds")
+
+cv_fit_fixed <- readRDS("msgl_sparseGL_0.5_cv_fit_seed631_fixed.rds")
+```
+
+# Fixed lambda sequence, no CV, sparse GL
+
+```{r}
+# set.seed(631)
+# 
+# fit <- msgl::fit(
+#   x = data_wide, 
+#   classes = cluster_assignment, 
+#   grouping = lasso_groups,
+#   standardize = TRUE,
+#   lambda = seq(0.08, 0.0005, by = -0.0005),
+#   alpha = 0.5)
+# 
+# saveRDS(fit, "msgl_sparseGL_0.5_fit_seed631_fixed.rds")
+
+fit_fixed <- readRDS("msgl_sparseGL_0.5_fit_seed631_fixed.rds")
+```
+
+
+
+
+```{r}
+get_positions <- function(vec){
+  vec <- vec[vec != "Intercept"]
+  return(unique(extract_time2(vec)))
+}
+
+lambdas <- fit_fixed$lambda
+
+num_positions <- rep(NA, length(lambdas))
+accuracy <- rep(NA, length(lambdas))
+
+# res <- predict(fit_fixed, as.matrix(data_wide))
+# 
+# saveRDS(res, "msgl_sparseGL_0.5_fit_seed631_fixed_predictions.rds")
+
+res <- readRDS("msgl_sparseGL_0.5_fit_seed631_fixed_predictions.rds")
+
+for (i in 1:length(lambdas)){
+  useful_positions <- features(fit_fixed)[[i]] # Non-zero features in best model
+  num_positions[i] <- length(get_positions(useful_positions))
+  
+  pred_result <- res$classes[,i]
+  accuracy[i] <- sum(pred_result == cluster_assignment)
+}
+
+
+# results are not cross-validated. So it would be even on the optimistic side. Is that good enough? Should I do the CV?
+result_file <- as.data.frame(cbind(lambdas, num_positions, accuracy))
+
+write.csv(result_file, "msgl_sparseGL_0.5_fit_seed631_fixed_results.csv")
+```
+
+
+# Different sparsity
+
+```{r}
+# set.seed(635)
+# 
+# fit_fixed <- msgl::fit(
+#   x = data_wide, 
+#   classes = cluster_assignment, 
+#   grouping = lasso_groups,
+#   standardize = TRUE,
+#   lambda = seq(0.08, 0.0005, by = -0.0005),
+#   alpha = 0.2)
+# 
+# saveRDS(fit_fixed, "msgl_sparseGL_0.2_fit_seed635_fixed.rds")
+
+sparsity0.2 <- readRDS("msgl_sparseGL_0.2_fit_seed635_fixed.rds")
+```
+
+```{r}
+# set.seed(957)
+# 
+# fit_fixed <- msgl::fit(
+#   x = data_wide, 
+#   classes = cluster_assignment, 
+#   grouping = lasso_groups,
+#   standardize = TRUE,
+#   lambda = seq(0.08, 0.0005, by = -0.0005),
+#   alpha = 0.8)
+# 
+# saveRDS(fit_fixed, "msgl_sparseGL_0.8_fit_seed957_fixed.rds")
+
+sparsity0.8 <- readRDS("msgl_sparseGL_0.8_fit_seed957_fixed.rds")
+```
+
+```{r}
+get_positions <- function(vec){
+  vec <- vec[vec != "Intercept"]
+  return(unique(extract_time2(vec)))
+}
+
+lambdas <- sparsity0.8$lambda
+
+num_positions <- rep(NA, length(lambdas))
+accuracy <- rep(NA, length(lambdas))
+
+res <- predict(sparsity0.8, as.matrix(data_wide))
+
+for (i in 1:length(lambdas)){
+  useful_positions <- features(sparsity0.8)[[i]] # Non-zero features in best model
+  num_positions[i] <- length(get_positions(useful_positions))
+  
+  pred_result <- res$classes[,i]
+  accuracy[i] <- sum(pred_result == cluster_assignment)
+}
+
+# results are not cross-validated. So it would be even on the optimistic side.
+result_file <- as.data.frame(cbind(lambdas, num_positions, accuracy))
+```
+

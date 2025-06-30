@@ -1,0 +1,225 @@
+---
+title: "main"
+author: "Zuofu Huang"
+output: html_document
+---
+
+# Housekeeping
+
+```{r message=FALSE}
+library(caret)
+library(tidyverse)
+library(clv)
+library(TraMineR)
+library(ggplot2)
+library(glmnet)
+# library(Matrix)
+# library(glmnet)
+library(matrixcalc)
+
+data <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/cleaned_data_noNA.csv")[,-c(1:3)]
+colnames(data) <- c(format(seq(as.POSIXct("00:00:00", format = "%T"), 
+                 as.POSIXct("23:59:00", format = "%T"), by = "1 min"), "%H:%M"))
+
+data <- data %>%
+  mutate_if(is.character, as.factor)
+
+extract_time <- function(string){
+  as.numeric(substring(string, 2, 3)) * 60 + as.numeric(substring(string, 5, 6)) + 1
+}
+```
+
+
+```{r}
+source("clust_assign_func.R")
+
+seq_distances <- read.csv("/Users/zuofuhuang/Desktop/reduceSeq/Transportation data/sequences_dist_matrix_om.csv")[,-1]
+
+hclust_real <- stats::hclust(as.dist(seq_distances), method = "complete")
+fit_real <- cutree(hclust_real, k = 23)
+table(fit_real)
+
+# OLD code
+# cluster_assignment <- create_clusters_Dunn(seq_distances)
+
+# Current
+cluster_assignment <- reorder_cluster_assignment(fit_real)
+cluster_assignment[cluster_assignment > 14] <- 15
+
+data_CA <- data
+data_CA$CA <- as.factor(cluster_assignment)
+```
+
+
+
+```{r}
+positions_larger_than_threshold <- function(lasso_object, index, threshold){
+  return(
+    (lasso_object[[index]]@Dimnames[[1]])[lasso_object[[index]]@i[which(abs((lasso_object[[index]]@x)) > threshold)]]
+  )
+}
+
+get_length <- function(lasso_object, index, threshold){
+  return(
+    length(positions_larger_than_threshold(lasso_object, index, threshold))
+  )
+}
+
+get_times <- function(lasso_object, index, threshold){
+  return(
+    extract_time(positions_larger_than_threshold(lasso_object, index, threshold))
+  )
+}
+```
+
+
+# LASSO
+
+```{r}
+# # Ran 12/28/2024 with seed 256
+# set.seed(256)
+# lasso_caret <- train(as.factor(CA) ~ .,
+#                     data = data_CA,
+#                     method = "glmnet",
+#                     family = "multinomial",
+#                     trControl = trainControl(method = "cv", number = 10),
+#                     tuneGrid = expand.grid(alpha = 1,
+#                                           lambda = seq(0, 0.1, length.out = 101)))
+#                                        # lambda = 0.003))
+# 
+# lasso_results <- coef(lasso_caret$finalModel, lasso_caret$finalModel$lambdaOpt)
+# 
+# sum(predict(lasso_caret, type = "raw") == cluster_assignment) 
+# mat1 <- table(predict(lasso_caret, type = "raw"), cluster_assignment) # top row is actual 
+```
+
+```{r}
+lasso_caret <- readRDS("lasso_full_model_data_seed256")
+lasso_results <- readRDS("lasso_results_data_seed256")
+```
+
+
+
+
+## See lasso path
+
+```{r}
+# # Ran 02082025 with seed 256
+# all_lambda <- seq(0, 0.025, length.out = 101)
+# all_accuracy <- rep(NA, length(all_lambda))
+# all_lengths <- rep(NA, length(all_lambda))
+# 
+# for (i in 1:length(all_lambda)){
+#   set.seed(256)
+#   lasso_lambda <- train(as.factor(CA) ~ .,
+#                        data = data_CA,
+#                        method = "glmnet",
+#                        family = "multinomial",
+#                        trControl = trainControl(method = "cv", number = 10),
+#                        tuneGrid = expand.grid(alpha = 1, lambda = all_lambda[i]))
+#   
+#   all_accuracy[i] <- sum(predict(lasso_lambda, type = "raw") == cluster_assignment)
+# 
+#   lasso_results_step2 <- coef(lasso_lambda$finalModel, lasso_lambda$finalModel$lambdaOpt)
+#   positions_left_step2 <- sort(unique(unlist(sapply(1:15, get_times, lasso_object = lasso_results_step2, threshold = 0))))
+#   # NA occasionally introduced for picking up intercept?
+#   positions_left_step2 <- na.omit(positions_left_step2)
+#   all_lengths[i] <- length(positions_left_step2)
+# }
+# 
+# LASSO_path_results_seed256 <- as.data.frame(cbind(all_lambda, all_accuracy, all_lengths))
+# 
+# saveRDS(LASSO_path_results_seed256, "LASSO_path_results_seed256")
+```
+
+```{r}
+lasso_path_results <- readRDS("LASSO_path_results_seed256")
+colnames(lasso_path_results) <- c("lambda","Accuracy","Positions")
+```
+
+```{r}
+ggplot(lasso_path_results, aes(x = lambda, y = Accuracy/2892)) + 
+  geom_point() + 
+  geom_smooth(se = F) +
+  ylab("Percent of correct classifications") +
+  scale_x_continuous(limits = c(0,0.0125), breaks = seq(0,0.0125,0.0025)) +
+  scale_y_continuous(limits = c(0.9,1), breaks = seq(0.9,1,0.01)) +
+  theme_bw()
+
+ggplot(lasso_path_results, aes(x = lambda, y = Positions)) + 
+  geom_point() + 
+  geom_smooth(se = F) +
+  ylab("Number of remaining positions") +
+  scale_x_continuous(breaks = seq(0,0.0125,0.0025)) +
+  theme_bw()
+```
+
+
+# LASSO with softmax using glmnet
+
+```{r}
+# set.seed(619)
+# 
+# X <- model.matrix(CA ~ . - 1, data = data_CA)  # no intercept
+# 
+# # Response as factor
+# y <- data_CA$CA
+# 
+# glmnet.control(maxit = 10000)
+# 
+# cv_fit <- cv.glmnet(
+#   x = X,
+#   y = y,
+#   family = "multinomial",
+#   alpha = 1,         # alpha = 1 for LASSO penalty
+#   nfolds = 10,        # 10-fold cross-validation
+#   lambda = seq(1, 0.001,by = -0.001),
+#   standardize = T
+# )
+# 
+# write_rds(cv_fit, "LASSO_softmax_seed619")
+```
+
+```{r}
+cv_fit <- read_rds("LASSO_softmax_seed619")
+
+best_lambda <- cv_fit$lambda.min
+
+coefs_for_each_class <- coef(cv_fit, s = "lambda.1se")
+
+coefs_for_each_class <- lapply(coefs_for_each_class, function(i) rownames(i)[which(i != 0)])
+
+this <- predict(cv_fit, newx = X, s = "lambda.1se", type = "class")
+sum(this == cluster_assignment) 
+
+# 2891 is the best it can do for lambda-min, lambda.1se uses slightly fewer positions
+
+
+get_positions <- function(coefs, index){
+  vec <- coefs[[index]]
+  vec <- vec[vec != "(Intercept)"]
+  return(unique(extract_time(vec)))
+}
+
+positions_used <- sort(unique(unlist(sapply(1:15, get_positions, coefs = coefs_for_each_class))))
+```
+
+```{r}
+mat2 <- coefs_for_each_class$`2`
+
+sort(abs(mat2@x))
+```
+
+```{r}
+lambda_list <- seq(0.01, 0.001,by = -0.001)
+
+result <- rep(NA, length(lambda_list))
+
+for (i in 1:length(lambda_list)){
+  this <- predict(cv_fit, newx = X, s = lambda_list[i], type = "class")
+  result[i] <- sum(this == cluster_assignment) 
+}
+```
+
+
+
