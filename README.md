@@ -1,3 +1,3 @@
 # reduceSeq
 
-Functions and data for the draft "Multinomial thresholded LASSO for interpretable dimension reduction of human activity sequences"
+All relevant code and the de-identified motivating dataset for the manuscript "Multinomial thresholded LASSO for interpretable dimension reduction of human activity sequences"
